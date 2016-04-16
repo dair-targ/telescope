@@ -1,0 +1,2 @@
+# telescope
+Automatical mount adjustment
