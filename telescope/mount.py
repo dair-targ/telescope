@@ -1,28 +1,25 @@
 #!/usr/bin/python
 
-import logging
+from __future__ import print_function
+from __future__ import print_function
+import logging.config
 import struct
 import time
-import unittest
+
+from astropy import units
+from astropy import coordinates
+
+import config
 import serial
-
-COEFF = 360.0
-
-
-def deg2str(v):
-    dd = int(abs(v))
-    mm = int(abs(v) * 60) % 60
-    ss = int(abs(v) * 3600) % 60
-    return '%s%sd%sm%ss' % (
-        ('-' if v < 0 else ''),
-        dd,
-        mm,
-        ss
-    )
+import os.path
 
 
 class Mount(object):
     def __init__(self, port, logger):
+        """
+        :type port: str
+        :type logger: logging.Logger
+        """
         self._logger = logger
         self._port = serial.Serial(
             port=port,
@@ -36,6 +33,7 @@ class Mount(object):
     def __enter__(self):
         if not self._port.isOpen():
             self._port.open()
+        self.cancel_goto_sync()
         return self
 
     def __exit__(self, *args):
@@ -83,81 +81,99 @@ class Mount(object):
     def set_tracking_off(self):
         return self.set_tracking_mode(0)
 
-    def _get(self, command):
-        response = self._command(command, 10)
-        s2v = lambda s: int(s, 16) / 65536.0 * COEFF
-        x, y = map(s2v, response[:-1].split(','))
-        return x, y
+    def goto(self, sky_coord):
+        """
+        :type sky_coord: coordinates.SkyCoord
+        """
+        self._logger.info('Going to %s', sky_coord.to_string('hmsdms'))
+        v2s = lambda v: '%X' % int(v * 65536.0)
+        self._command('R%s,%s' % (
+            v2s(sky_coord.ra.cycle + 0.5),
+            v2s(sky_coord.dec.cycle + 0.25)
+        ), 1)
 
-    def _set(self, c, x, y):
-        v2s = lambda v: '%X' % int(v * 65536.0 / COEFF)
-        command = '%s%s,%s' % (c, v2s(x), v2s(y))
-        self._command(command, 1)
+    def goto_sync(self, sky_coord, timeout=30.0):
+        """
+        :type sky_coord: coordinates.SkyCoord
+        :type timeout:
+        """
+        self.goto(sky_coord)
+        self._wait_goto(timeout)
 
-    def get_ra_dec(self):
-        return self._get('E')
-
-    def goto_ra_dec(self, ra, dec):
-        return self._set('R', ra, dec)
-
-    def goto_ra_dec_sync(self, ra, dec):
-        self.goto_ra_dec(ra, dec)
-        self._wait_goto()
-
-    def get_azm_alt(self):
-        return self._get('Z')
-
-    def goto_azm_alt(self, azm, alt):
-        return self._set('B', azm, alt)
-
-    def goto_azm_alt_sync(self, azm, alt):
-        self.goto_azm_alt(azm, alt)
-        self._wait_goto()
+    def get_coord(self):
+        """
+        :rtype: coordinates.SkyCoord
+        """
+        response = self._command('E', 10)
+        s2v = lambda s: int(s, 16) / 65536.0
+        ra, dec = map(s2v, response[:-1].split(','))
+        return coordinates.SkyCoord(
+            ra=(ra - 0.5) * units.cycle,
+            dec=(dec - 0.25) * units.cycle,
+        )
 
     def is_goto_in_progress(self):
         response = self._command('L')
         return response[0] != '0'
 
     def cancel_goto(self):
-        self._command('M')
+        if self.is_goto_in_progress():
+            self._logger.info('GOTO is already canceled')
+        else:
+            self._logger.info('Canceling GOTO')
+            self._command('M', 1)
 
     def cancel_goto_sync(self):
         self.cancel_goto()
         self._wait_goto()
 
     def _wait_goto(self, timeout=30.0, step=0.1):
+        self._logger.info('Waiting while GOTO in progress...')
         spent = 0.0
         while self.is_goto_in_progress() and spent < timeout:
             time.sleep(step)
             spent += step
+        self._logger.info('GOTO completed in %.1f seconds', spent)
         return spent
 
-    def _reset_az_alt(self, axis, value):
-        self._logger.info('Reset %s to %s' % (axis, deg2str(value)))
-        axis_b = dict(az=16, alt=17)[axis]
-        value24 = int(2 ** 24 * (value / COEFF))
-        vh = value24 / (2 ** 16) % 2 ** 8
-        vm = value24 / (2 ** 8) % 2 ** 8
-        vl = value24 / (2 ** 0) % 2 ** 8
-        self._command([80, 4, axis_b, vh, vm, vl, 0])
 
-
-def test_goto(mount, ra, dec, error):
+def test_goto(expected_coord, allowed_error):
     """
-    :type mount: Mount
+    :type expected_coord: coordinates.SkyCoord
     """
-    mount.goto_ra_dec_sync(ra, dec)
-    actual_ra, actual_dec = mount.get_ra_dec()
-    assert abs(actual_ra - ra) < error
-    assert abs(actual_dec - dec) < error
+    logging.info('Testing goto to %s', expected_coord.to_string('hmsdms'))
+    try:
+        logging.info('Initial position: %s', mount.get_coord().to_string('hmsdms'))
+        mount.goto_sync(expected_coord)
+        actual_coord = mount.get_coord()
+        separation = expected_coord.separation(actual_coord)
+        if separation > allowed_error:
+            logging.error('Separation (%s) is greater than allowed error(%s)' % (
+                separation,
+                allowed_error
+            ))
+        else:
+            logging.info(
+                'Separation (%s) is less than allowed error(%s)' % (
+                    separation,
+                    allowed_error
+                ))
+    finally:
+        logging.info('Position after goto: %s', mount.get_coord().to_string('hmsdms'))
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
-    with Mount(port='/dev/ttyUSB0', logger=logging) as mount:
-        for ra, dec in [
-            (270.0, 60.0),
-            (243.0, 34.0),
-            (120.0, 10.0)
+    logging.config.dictConfig(config.LOGGING)
+    with Mount(
+            port='/dev/ttyUSB0',
+            logger=logging
+    ) as mount:
+        for sky_coord in [
+            coordinates.SkyCoord(ra=0.0 * units.degree, dec=0.0 * units.degree),
+            coordinates.SkyCoord(ra=0.0 * units.degree, dec=85.0 * units.degree),
+            coordinates.SkyCoord(ra=0.0 * units.degree, dec=-85.0 * units.degree),
+            coordinates.SkyCoord(ra=175.0 * units.degree, dec=0.0 * units.degree),
+            coordinates.SkyCoord(ra=-175.0 * units.degree, dec=0.0 * units.degree),
+            coordinates.SkyCoord(ra=0.0 * units.degree, dec=0.0 * units.degree),
         ]:
-            test_goto(mount, ra, dec, 1.0)
+            test_goto(sky_coord, 1.0 * units.degree)

@@ -12,6 +12,6 @@ setup(
 
     install_requires=[
         'pyserial==3.0.1',
-        'pytest==2.9.1',
+        'astropy'
     ]
 )

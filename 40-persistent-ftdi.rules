@@ -1,0 +1,3 @@
+# Configuration should be copied into /etc/udev/rules.d
+# in order to make DB9 <-> USB device readable and writeable by default.
+ATTRS{idVendor}=="0403",ATTRS{idProduct}=="6001",MODE="0666",GROUP="users"
