@@ -11,11 +11,14 @@ from astropy import coordinates
 
 import config
 import serial
-import os.path
 
 
 class Mount(object):
-    def __init__(self, port, logger):
+    def __init__(
+            self,
+            port,
+            logger,
+    ):
         """
         :type port: str
         :type logger: logging.Logger
@@ -86,7 +89,7 @@ class Mount(object):
         :type sky_coord: coordinates.SkyCoord
         """
         self._logger.info('Going to %s', sky_coord.to_string('hmsdms'))
-        v2s = lambda v: '%X' % int(v * 65536.0)
+        v2s = lambda v: '%04X' % int(v * 65536.0)
         self._command('R%s,%s' % (
             v2s(sky_coord.ra.cycle + 0.5),
             v2s(sky_coord.dec.cycle + 0.25)

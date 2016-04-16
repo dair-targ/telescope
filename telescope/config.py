@@ -17,6 +17,6 @@ LOGGING = {
         'handlers': [
             'default'
         ],
-        'level': 'INFO',
+        'level': 'DEBUG',
     }
 }
