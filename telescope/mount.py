@@ -136,8 +136,57 @@ class Mount(object):
         while self.is_goto_in_progress() and spent < timeout:
             time.sleep(step)
             spent += step
+            logging.info(
+                'Position after %.2fs is %s',
+                spent,
+                mount.get_coord().to_string('hmsdms')
+            )
         self._logger.info('GOTO completed in %.1f seconds', spent)
         return spent
+
+
+def find_bounds(mount):
+    """
+    Looks up for actual area mount can go
+
+    :type Mount
+    """
+    initial_coord = mount.get_coord()
+    def search(initial_coord, step):
+        """
+        :type initial_coord: coordinates.SkyCoord
+        :type step: coordinates.SkyCoord
+        """
+        logging.info('Initial coord: %s' % initial_coord.to_string('hmsdms'))
+        expected_coord = actual_coord = initial_coord
+        while expected_coord.separation(actual_coord) < 5.0 * units.degree:
+            expected_coord = coordinates.SkyCoord(
+                ra=expected_coord.ra + step.ra,
+                dec=expected_coord.dec + step.dec,
+            )
+            logging.info('Expected coord: %s' % expected_coord.to_string('hmsdms'))
+            mount.goto_sync(expected_coord)
+            actual_coord = mount.get_coord()
+            logging.info('Actual coord: %s' % actual_coord.to_string('hmsdms'))
+        logging.info('Max dec is reached at %s' % actual_coord.to_string('hmsdms'))
+        return expected_coord
+    top = search(initial_coord, coordinates.SkyCoord(
+        ra=0.0 * units.degree,
+        dec=10.0 * units.degree,
+    ))
+    bottom = search(initial_coord, coordinates.SkyCoord(
+        ra=0.0 * units.degree,
+        dec=-10.0 * units.degree,
+    ))
+    left = search(initial_coord, coordinates.SkyCoord(
+        ra=10.0 * units.degree,
+        dec=0.0 * units.degree,
+    ))
+    right = search(initial_coord, coordinates.SkyCoord(
+        ra=-10.0 * units.degree,
+        dec=0.0 * units.degree,
+    ))
+    return top, bottom, left, right
 
 
 def test_goto(expected_coord, allowed_error):
@@ -146,6 +195,7 @@ def test_goto(expected_coord, allowed_error):
     """
     logging.info('Testing goto to %s', expected_coord.to_string('hmsdms'))
     try:
+        mount.goto_sync(coordinates.SkyCoord(ra=0.0 * units.degree, dec=0.0 * units.degree))
         logging.info('Initial position: %s', mount.get_coord().to_string('hmsdms'))
         mount.goto_sync(expected_coord)
         actual_coord = mount.get_coord()
@@ -171,12 +221,15 @@ if __name__ == '__main__':
             port='/dev/ttyUSB0',
             logger=logging
     ) as mount:
+        logging.info(mount.get_coord().to_string('hmsdms'))
+        # test_goto()
+        # logging.info('Result:\n%s' % '\n'.join([sc.to_string('hmsdms') for sc in find_bounds(mount)]))
         for sky_coord in [
             coordinates.SkyCoord(ra=0.0 * units.degree, dec=0.0 * units.degree),
-            coordinates.SkyCoord(ra=0.0 * units.degree, dec=85.0 * units.degree),
-            coordinates.SkyCoord(ra=0.0 * units.degree, dec=-85.0 * units.degree),
-            coordinates.SkyCoord(ra=175.0 * units.degree, dec=0.0 * units.degree),
-            coordinates.SkyCoord(ra=-175.0 * units.degree, dec=0.0 * units.degree),
+            coordinates.SkyCoord(ra=0.0 * units.degree, dec=89.0 * units.degree),
+            coordinates.SkyCoord(ra=0.0 * units.degree, dec=-89.0 * units.degree),
+            coordinates.SkyCoord(ra=179.0 * units.degree, dec=0.0 * units.degree),
+            coordinates.SkyCoord(ra=-179.0 * units.degree, dec=0.0 * units.degree),
             coordinates.SkyCoord(ra=0.0 * units.degree, dec=0.0 * units.degree),
         ]:
             test_goto(sky_coord, 1.0 * units.degree)
